@@ -111,15 +111,22 @@ void ScreenSpaceReflectionsTracing(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     float2 positionNDC = positionSS * _ScreenSize.zw + (0.5 * _ScreenSize.zw); // Should we precompute the half-texel bias? We seem to use it a lot.
     float  deviceDepth = LOAD_TEXTURE2D_X(_DepthPyramidTexture, positionSS).r;
-           deviceDepth = (deviceDepth - _SsrThicknessBias) / _SsrThicknessScale; // Apply a small bias. TODO: precompute
-    float3 positionWS  = ComputeWorldSpacePosition(positionNDC, deviceDepth, UNITY_MATRIX_I_VP); // Jittered
-    float3 V           = GetWorldSpaceNormalizeViewDir(positionWS);
 
     bool killRay = deviceDepth == UNITY_RAW_FAR_CLIP_VALUE;
+
+    float3 positionWS = ComputeWorldSpacePosition(positionNDC, deviceDepth, UNITY_MATRIX_I_VP); // Jittered
+    float3 V          = GetWorldSpaceNormalizeViewDir(positionWS);
 
     float3 N;
     float perceptualRoughness;
     GetNormalAndPerceptualRoughness(positionSS, N, perceptualRoughness);
+
+    float3 camPosWS = GetCurrentViewPosition();
+
+    // Apply normal bias with the magnitude dependent on the distance from the camera.
+    // Unfortunately, we only have access to the shading normal, which is less than ideal...
+    positionWS  = camPosWS + (positionWS - camPosWS) * (1 - 0.001 * rcp(max(dot(N, V), FLT_EPS)));
+    deviceDepth = ComputeNormalizedDeviceCoordinatesWithZ(positionWS, UNITY_MATRIX_VP).z;
 
     // Ref. #1: Michal Drobot - Quadtree Displacement Mapping with Height Blending.
     // Ref. #2: Yasin Uludag  - Hi-Z Screen-Space Cone-Traced Reflections.
