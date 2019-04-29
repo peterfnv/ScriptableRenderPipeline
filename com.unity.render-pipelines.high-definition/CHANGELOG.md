@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 - Refactor PixelCoordToViewDirWS to be VR compatible and to compute it only once per frame
+- Override the cascade shadow split data to shrink with a factor of 0.6 like the default built-in value
 
 ## [6.6.0-preview] - 2019-04-01
 
