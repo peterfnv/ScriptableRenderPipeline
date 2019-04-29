@@ -1,5 +1,9 @@
 #include "Packages/com.unity.render-pipelines.high-definition/Runtime/RenderPipeline/Raytracing/Shaders/RaytracingFragInputs.hlsl"
 
+#ifdef ENABLE_RTPV
+#   include "Packages/com.unity.ddgi/IrradianceField.hlsl"
+#endif
+
 // Generic function that handles the reflection code
 [shader("closesthit")]
 void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, AttributeData attributeData : SV_IntersectionAttributes)
@@ -14,11 +18,6 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
 
     // Compute the view vector
     float3 viewWS = -rayIntersection.incidentDirection;
-
-    // Make sure to add the additional travel distance
-    float travelDistance = length(GetAbsolutePositionWS(fragInput.positionRWS) - rayIntersection.origin);
-    rayIntersection.t = travelDistance;
-    rayIntersection.cone.width += travelDistance * rayIntersection.cone.spreadAngle;
     
     PositionInputs posInput;
     posInput.positionWS = fragInput.positionRWS;
@@ -28,6 +27,18 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
     SurfaceData surfaceData;
     BuiltinData builtinData;
     GetSurfaceDataFromIntersection(fragInput, viewWS, posInput, currentvertex, rayIntersection.cone, surfaceData, builtinData);
+
+    // Make sure to add the additional travel distance
+    float3 rayHitLocation = GetAbsolutePositionWS(fragInput.positionRWS);
+#ifdef ENABLE_RTPV
+    //DDGI, move intersection point away from surface along surface normal by small amount.
+    rayHitLocation = rayHitLocation + (surfaceData.normalWS * 0.01f);
+    float travelDistance = min(IFmaxDistance, length(rayHitLocation - rayIntersection.origin));
+#else
+    float travelDistance = length(rayHitLocation - rayIntersection.origin);
+#endif
+    rayIntersection.t = travelDistance;
+    rayIntersection.cone.width += travelDistance * rayIntersection.cone.spreadAngle;
 
     // TODO: Handle this in a better way, we should be able to use baked indirect lighting
     builtinData.bakeDiffuseLighting = float3(0.0, 0.0, 0.0);
