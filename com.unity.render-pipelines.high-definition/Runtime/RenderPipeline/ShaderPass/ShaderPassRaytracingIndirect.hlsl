@@ -40,6 +40,14 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
     rayIntersection.t = travelDistance;
     rayIntersection.cone.width += travelDistance * rayIntersection.cone.spreadAngle;
 
+#ifdef ENABLE_RTPV
+    if (!fragInput.isFrontFace)
+    {
+        rayIntersection.color = float3(0.0, 0.0, 0.0);
+        return;
+    }
+#endif
+
     // TODO: Handle this in a better way, we should be able to use baked indirect lighting
     builtinData.bakeDiffuseLighting = float3(0.0, 0.0, 0.0);
     builtinData.backBakeDiffuseLighting = float3(0.0, 0.0, 0.0);
