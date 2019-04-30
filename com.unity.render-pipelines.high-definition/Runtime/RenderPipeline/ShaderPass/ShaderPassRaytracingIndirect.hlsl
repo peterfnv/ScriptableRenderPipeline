@@ -1,9 +1,5 @@
 #include "Packages/com.unity.render-pipelines.high-definition/Runtime/RenderPipeline/Raytracing/Shaders/RaytracingFragInputs.hlsl"
 
-#ifdef ENABLE_RTPV
-#   include "Packages/com.unity.ddgi/IrradianceField.hlsl"
-#endif
-
 // Generic function that handles the reflection code
 [shader("closesthit")]
 void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, AttributeData attributeData : SV_IntersectionAttributes)
@@ -30,13 +26,7 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
 
     // Make sure to add the additional travel distance
     float3 rayHitLocation = GetAbsolutePositionWS(fragInput.positionRWS);
-#ifdef ENABLE_RTPV
-    //DDGI, move intersection point away from surface along surface normal by small amount.
-    rayHitLocation = rayHitLocation + (surfaceData.normalWS * 0.01f);
-    float travelDistance = min(IFmaxDistance, length(rayHitLocation - rayIntersection.origin));
-#else
     float travelDistance = length(rayHitLocation - rayIntersection.origin);
-#endif
     rayIntersection.t = travelDistance;
     rayIntersection.cone.width += travelDistance * rayIntersection.cone.spreadAngle;
 
