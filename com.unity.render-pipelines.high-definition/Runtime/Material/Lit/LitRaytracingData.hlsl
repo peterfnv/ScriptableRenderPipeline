@@ -71,7 +71,8 @@ bool GetSurfaceDataFromIntersection(FragInputs input, float3 V, PositionInputs p
     surfaceData.specularOcclusion = 1.0;
 
     #ifdef _NORMALMAP
-    float3 normalTS = SAMPLE_TEXTURE2D_LOD(_NormalMap, sampler_NormalMap, uvBase, _NormalScale);
+    float4 packedNormalTS = SAMPLE_TEXTURE2D_LOD(_NormalMap, sampler_NormalMap, uvBase, 0.0);
+    float3 normalTS = UnpackNormalmapRGorAG(packedNormalTS, _NormalScale);
     GetNormalWS(input, normalTS, surfaceData.normalWS, doubleSidedConstants);
     #else
     surfaceData.normalWS = input.worldToTangent[2];
