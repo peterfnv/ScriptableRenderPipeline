@@ -527,7 +527,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                     // Frustum cull on the CPU for now. TODO: do it on the GPU.
                     // TODO: account for custom near and far planes of the V-Buffer's frustum.
                     // It's typically much shorter (along the Z axis) than the camera's frustum.
-                    if (GeometryUtils.Overlap(obb, hdCamera.frustum, 6, 8))
+                    if (GeometryUtils.Overlap(obb, hdCamera.frustum))
                     {
                         // TODO: cache these?
                         var data = volume.parameters.ConvertToEngineData();
