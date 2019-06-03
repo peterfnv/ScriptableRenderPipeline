@@ -34,6 +34,12 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
     if (!fragInput.isFrontFace)
     {
         rayIntersection.color = float3(0.0, 0.0, 0.0);
+
+        // Hit a backface. Pull in the distance towards the probe, so that
+        // this probe is less likely to affect surfaces in this direction.
+        // (Additionally increasing sharpness here suprisingly does not
+        // improve the situation further.)
+        rayIntersection.t *= 0.2;
         return;
     }
 #endif
