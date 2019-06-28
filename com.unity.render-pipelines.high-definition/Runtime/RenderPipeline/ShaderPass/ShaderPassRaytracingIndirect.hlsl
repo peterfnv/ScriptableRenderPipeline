@@ -22,7 +22,7 @@ void ClosestHitMain(inout RayIntersection rayIntersection : SV_RayPayload, Attri
     // Build the surfacedata and builtindata
     SurfaceData surfaceData;
     BuiltinData builtinData;
-    GetSurfaceDataFromIntersection(fragInput, viewWS, posInput, currentvertex, rayIntersection.cone, surfaceData, builtinData);
+    GetSurfaceDataFromIntersection(fragInput, viewWS, posInput, currentvertex, rayIntersection.cone, surfaceData, builtinData); 
 
     // Make sure to add the additional travel distance
     float3 rayHitLocation = GetAbsolutePositionWS(fragInput.positionRWS);

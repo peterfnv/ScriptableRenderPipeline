@@ -219,7 +219,12 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
 #if ENABLE_RAYTRACING
             HDRaytracingEnvironment rtEnvironement = m_RayTracingManager.CurrentEnvironment();
             if (rtEnvironement != null && rtEnvironement.raytracedAO && !(((camera.camera.cameraType == CameraType.SceneView) && !rtEnvironement.raytraceSceneCamera)))
-                m_RaytracingAmbientOcclusion.RenderAO(camera, cmd, m_AmbientOcclusionTex, renderContext, frameCount);
+            {
+                using (new ProfilingSample(cmd, "RaytraceAO"))
+                {
+                    m_RaytracingAmbientOcclusion.RenderAO(camera, cmd, m_AmbientOcclusionTex, renderContext, frameCount);
+                }
+            }
             else
 #endif
             {

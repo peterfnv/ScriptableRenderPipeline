@@ -2938,7 +2938,10 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             HDRaytracingEnvironment rtEnvironement = m_RayTracingManager.CurrentEnvironment();
             if (rtEnvironement != null && rtEnvironement.raytracedReflections && !((hdCamera.camera.cameraType == CameraType.SceneView) && !rtEnvironement.raytraceSceneCamera))
             {
-                m_RaytracingReflections.RenderReflections(hdCamera, cmd, m_SsrLightingTexture, renderContext, m_FrameCount);
+                using (new ProfilingSample(cmd, "RaytraceReflections"))
+                {
+                    m_RaytracingReflections.RenderReflections(hdCamera, cmd, m_SsrLightingTexture, renderContext, m_FrameCount);
+                }
             }
             else
 #endif

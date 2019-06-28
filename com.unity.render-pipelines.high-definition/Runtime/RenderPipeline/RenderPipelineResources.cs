@@ -132,6 +132,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             // Reflection
             public RaytracingShader reflectionRaytracing;
             public ComputeShader reflectionBilateralFilterCS;
+            public ComputeShader reflectionBinningCS;
 
             // Shadows
             public RaytracingShader areaShadowsRaytracingRT;
@@ -344,7 +345,8 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                 // Reflection
                 reflectionRaytracing = Load<RaytracingShader>(HDRenderPipelinePath + "RenderPipeline/Raytracing/Shaders/RaytracingReflections.raytrace"),
                 reflectionBilateralFilterCS = Load<ComputeShader>(HDRenderPipelinePath + "RenderPipeline/Raytracing/Shaders/RaytracingReflectionFilter.compute"),
-                
+                reflectionBinningCS = Load<ComputeShader>(HDRenderPipelinePath + "RenderPipeline/Raytracing/Shaders/RaytracingReflectionBinning.compute"),
+
                 // Indirect Diffuse
                 indirectDiffuseRaytracing = Load<RaytracingShader>(HDRenderPipelinePath + "RenderPipeline/Raytracing/Shaders/RaytracingIndirectDiffuse.raytrace"),
                 indirectDiffuseAccumulation = Load<ComputeShader>(HDRenderPipelinePath + "RenderPipeline/Raytracing/Shaders/RaytracingAccumulation.compute"),

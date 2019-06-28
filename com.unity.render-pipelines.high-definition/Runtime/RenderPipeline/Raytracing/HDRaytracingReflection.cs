@@ -2,6 +2,9 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using System.Collections.Generic;
 
+using UnityEngine.Experimental.Rendering;
+using UnityEngine.Experimental.Rendering.HDPipeline;
+
 namespace UnityEngine.Experimental.Rendering.HDPipeline
 {
 #if ENABLE_RAYTRACING
@@ -21,6 +24,18 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         RTHandleSystem.RTHandle m_VarianceBuffer = null;
         RTHandleSystem.RTHandle m_MinBoundBuffer = null;
         RTHandleSystem.RTHandle m_MaxBoundBuffer = null;
+
+        RTHandleSystem.RTHandle m_rtReflBinTemp = null;
+        RTHandleSystem.RTHandle m_rtReflBinRemap = null;
+
+        int binningMaxBins = 2048;                  //4bits tile, 4bits,3bits angle
+#if true
+        RenderTexture m_rtReflBinCounts { get; set; }     //counts of each mat after trace (size=maxmats)
+        RenderTexture m_rtReflBinOffsets { get; set; }    //offsets of each bin in binningBins (size=maxmats)
+#else
+        ComputeBuffer m_rtReflBinCounts = null;
+        ComputeBuffer m_rtReflBinOffsets = null;
+#endif
 
         // String values
         const string m_RayGenHalfResName = "RayGenHalfRes";
@@ -52,6 +67,46 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             m_VarianceBuffer = RTHandles.Alloc(Vector2.one, filterMode: FilterMode.Point, colorFormat: GraphicsFormat.R8_UNorm, enableRandomWrite: true, useDynamicScale: true, useMipMap: false, name: "VarianceBuffer");
             m_MinBoundBuffer = RTHandles.Alloc(Vector2.one, filterMode: FilterMode.Point, colorFormat: GraphicsFormat.B10G11R11_UFloatPack32, enableRandomWrite: true, useDynamicScale: true, useMipMap: false, name: "MinBoundBuffer");
             m_MaxBoundBuffer = RTHandles.Alloc(Vector2.one, filterMode: FilterMode.Point, colorFormat: GraphicsFormat.B10G11R11_UFloatPack32, enableRandomWrite: true, useDynamicScale: true, useMipMap: false, name: "MaxBoundBuffer");
+
+            m_rtReflBinTemp = RTHandles.Alloc(Vector2.one, filterMode: FilterMode.Point, colorFormat: GraphicsFormat.R32_UInt, enableRandomWrite: true, useDynamicScale: true, useMipMap: false, name: "rtReflBinTemp");
+            m_rtReflBinRemap = RTHandles.Alloc(Vector2.one, filterMode: FilterMode.Point, colorFormat: GraphicsFormat.R32_UInt, enableRandomWrite: true, useDynamicScale: true, useMipMap: false, name: "rtReflBinRemap");
+
+#if true
+            if (m_rtReflBinCounts == null)
+            {
+                m_rtReflBinCounts = new RenderTexture(binningMaxBins, 1, 0, GraphicsFormat.R32_UInt);
+                m_rtReflBinCounts.enableRandomWrite = true;
+                m_rtReflBinCounts.hideFlags = HideFlags.HideAndDontSave;
+                m_rtReflBinCounts.filterMode = FilterMode.Point;
+                m_rtReflBinCounts.wrapMode = TextureWrapMode.Clamp;
+                m_rtReflBinCounts.anisoLevel = 0;
+                m_rtReflBinCounts.name = "m_rtReflBinCounts";
+                m_rtReflBinCounts.Create();
+            }
+            if (m_rtReflBinOffsets == null)
+            {
+                m_rtReflBinOffsets = new RenderTexture(binningMaxBins, 1, 0, GraphicsFormat.R32_UInt);
+                m_rtReflBinOffsets.enableRandomWrite = true;
+                m_rtReflBinOffsets.hideFlags = HideFlags.HideAndDontSave;
+                m_rtReflBinOffsets.filterMode = FilterMode.Point;
+                m_rtReflBinOffsets.wrapMode = TextureWrapMode.Clamp;
+                m_rtReflBinOffsets.anisoLevel = 0;
+                m_rtReflBinOffsets.name = "m_rtReflBinOffsets";
+                m_rtReflBinOffsets.Create();
+            }
+#else
+            if (m_rtReflBinCounts == null)
+            {
+                m_rtReflBinCounts = new ComputeBuffer(binningMaxBins, System.Runtime.InteropServices.Marshal.SizeOf(typeof(uint)));
+            }
+            if (m_rtReflBinOffsets == null)
+            {
+                m_rtReflBinOffsets = new ComputeBuffer(binningMaxBins, System.Runtime.InteropServices.Marshal.SizeOf(typeof(uint)));
+            }
+            //cmd.SetRaytracingBufferParam(shadowRaytrace, m_RayGenShadowSingleName???, HDShaderIDs._LightDatas???, m_rtReflBinCounts);
+
+#endif
+
         }
 
         static RTHandleSystem.RTHandle ReflectionHistoryBufferAllocatorFunction(string viewName, int frameIndex, RTHandleSystem rtHandleSystem)
@@ -61,8 +116,35 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                                         name: string.Format("ReflectionHistoryBuffer{0}", frameIndex));
         }
 
+        private void DestroyObjectCustom(Object obj)
+        {
+#if UNITY_EDITOR
+            CoreUtils.Destroy(obj);
+#else
+        CoreUtils.Destroy(obj);
+#endif
+        }
+
         public void Release()
         {
+#if true
+            if (m_rtReflBinCounts != null)
+            {
+                DestroyObjectCustom(m_rtReflBinCounts);
+                m_rtReflBinCounts = null;
+            }
+            if (m_rtReflBinOffsets != null)
+            {
+                DestroyObjectCustom(m_rtReflBinOffsets);
+                m_rtReflBinOffsets = null;
+            }
+#else
+            CoreUtils.SafeRelease(m_rtReflBinCounts);
+            CoreUtils.SafeRelease(m_rtReflBinOffsets);
+#endif
+            RTHandles.Release(m_rtReflBinRemap);
+            RTHandles.Release(m_rtReflBinTemp);
+
             RTHandles.Release(m_MinBoundBuffer);
             RTHandles.Release(m_MaxBoundBuffer);
             RTHandles.Release(m_VarianceBuffer);
@@ -78,9 +160,10 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             BlueNoise blueNoise = m_RaytracingManager.GetBlueNoiseManager();
             ComputeShader reflectionFilter = m_PipelineAsset.renderPipelineResources.shaders.reflectionBilateralFilterCS;
             RaytracingShader reflectionShader = m_PipelineAsset.renderPipelineResources.shaders.reflectionRaytracing;
+            ComputeShader binningShaders = m_PipelineAsset.renderPipelineResources.shaders.reflectionBinningCS;
 
             bool invalidState = rtEnvironement == null || blueNoise == null
-                || reflectionFilter == null || reflectionShader == null 
+                || reflectionFilter == null || reflectionShader == null || binningShaders == null
                 || m_PipelineResources.textures.owenScrambledTex == null || m_PipelineResources.textures.scramblingTex == null;
 
             // If no acceleration structure available, end it now
@@ -105,6 +188,90 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                     targetRayGen = m_RayGenIntegrationName;
                 };
                 break;
+            }
+
+            // Compute the actual resolution that is needed base on the quality
+            uint widthResolution = 1, heightResolution = 1;
+            switch (rtEnvironement.reflQualityMode)
+            {
+                case HDRaytracingEnvironment.ReflectionsQuality.QuarterRes:
+                    {
+                        widthResolution = (uint)hdCamera.actualWidth / 2;
+                        heightResolution = (uint)hdCamera.actualHeight / 2;
+                    };
+                    break;
+                case HDRaytracingEnvironment.ReflectionsQuality.Integration:
+                    {
+                        widthResolution = (uint)hdCamera.actualWidth;
+                        heightResolution = (uint)hdCamera.actualHeight;
+                    };
+                    break;
+            }
+
+            using (new ProfilingSample(cmd, "REFLECTION BINNING"))
+            {
+                using (new ProfilingSample(cmd, "clear bins"))
+                {
+                    //clear binning counts
+                    int ki = binningShaders.FindKernel("ClearBinCounts");
+                    if (ki < 0)
+                        return;
+
+                    // Inputs
+                    int tx = 2048;
+                    int ty = 1;
+                    cmd.SetComputeTextureParam(binningShaders, ki, "_RTReflBinCounts", m_rtReflBinCounts);
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflBinMax", 2048);
+
+                    uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
+                    binningShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    int tgx = (int)((tx + bgroupSizeX - 1) / bgroupSizeX);
+                    int tgy = (int)((ty + bgroupSizeY - 1) / bgroupSizeY);
+
+                    // Dispatch
+                    cmd.DispatchCompute(binningShaders, ki, tgx, tgy, 1);
+
+                }
+
+                using (new ProfilingSample(cmd, "prepass"))
+                {
+                    // Fetch the right filter to use
+                    int currentKernel = binningShaders.FindKernel("Prepass");
+#if true
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._DepthTexture, m_SharedRTManager.GetDepthStencilBuffer());
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, "_NoiseTexture", blueNoise.textureArray16RGB);
+                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_VarianceTexture", m_VarianceBuffer);
+                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_MinColorRangeTexture", m_MinBoundBuffer);
+                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_MaxColorRangeTexture", m_MaxBoundBuffer);
+                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_RaytracingReflectionTexture", outputTexture);
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._ScramblingTexture, m_PipelineResources.textures.scramblingTex);
+                    cmd.SetComputeIntParam(binningShaders, HDShaderIDs._SpatialFilterRadius, rtEnvironement.reflSpatialFilterRadius);
+                    cmd.SetComputeFloatParam(binningShaders, HDShaderIDs._RaytracingReflectionMinSmoothness, rtEnvironement.reflMinSmoothness);
+
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflBinMax", 2048);
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflWidth", (int)widthResolution);
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflHeight", (int)heightResolution);
+
+                    // outputs
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, "_RTReflBinTemp", m_rtReflBinTemp);
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, "_RTReflBinCounts", m_rtReflBinCounts);
+
+                    // Bind the right texture for clear coat support
+                    RenderTargetIdentifier clearCoatMaskTexture2 = hdCamera.frameSettings.litShaderMode == LitShaderMode.Deferred ? m_GbufferManager.GetBuffersRTI()[2] : Texture2D.blackTexture;
+                    cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._SsrClearCoatMaskTexture, clearCoatMaskTexture2);
+
+
+                    uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
+                    binningShaders.GetKernelThreadGroupSizes(currentKernel, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    int tgx = (int)((widthResolution + bgroupSizeX - 1) / bgroupSizeX);
+                    int tgy = (int)((heightResolution + bgroupSizeY - 1) / bgroupSizeY);
+
+                    // Compute the texture
+                    cmd.DispatchCompute(binningShaders, currentKernel, tgx, tgy, 1);
+#endif
+                }
             }
 
             // Define the shader pass to use for the reflection pass
@@ -135,6 +302,11 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, HDShaderIDs._DepthTexture, m_SharedRTManager.GetDepthStencilBuffer());
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, HDShaderIDs._NormalBufferTexture, m_SharedRTManager.GetNormalBuffer());
 
+            //test!!!!
+            cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinTemp", m_rtReflBinTemp);
+            cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinCounts", m_rtReflBinCounts);
+            cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinOffsets", m_rtReflBinOffsets);
+
             // Set ray count tex
             cmd.SetRaytracingIntParam(reflectionShader, HDShaderIDs._RayCountEnabled, m_RaytracingManager.rayCountManager.RayCountIsEnabled());
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, HDShaderIDs._RayCountTexture, m_RaytracingManager.rayCountManager.rayCountTexture);
@@ -163,23 +335,7 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             // Set the data for the ray miss
             cmd.SetRaytracingTextureParam(reflectionShader, m_MissShaderName, HDShaderIDs._SkyTexture, m_SkyManager.skyReflection);
 
-            // Compute the actual resolution that is needed base on the quality
-            uint widthResolution = 1, heightResolution = 1;
-            switch (rtEnvironement.reflQualityMode)
-            {
-                case HDRaytracingEnvironment.ReflectionsQuality.QuarterRes:
-                {
-                    widthResolution = (uint)hdCamera.actualWidth / 2;
-                    heightResolution = (uint)hdCamera.actualHeight / 2;
-                };
-                break;
-                case HDRaytracingEnvironment.ReflectionsQuality.Integration:
-                {
-                    widthResolution = (uint)hdCamera.actualWidth;
-                    heightResolution = (uint)hdCamera.actualHeight;
-                };
-                break;
-            }
+
 
             // Force to disable specular lighting
             cmd.SetGlobalInt(HDShaderIDs._EnableSpecularLighting, 0);
@@ -311,4 +467,4 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         }
     }
 #endif
-}
+            }

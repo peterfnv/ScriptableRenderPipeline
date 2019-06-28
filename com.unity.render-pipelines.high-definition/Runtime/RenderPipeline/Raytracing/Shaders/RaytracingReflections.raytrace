@@ -35,6 +35,11 @@ RWTexture2D<float4>                     _SsrLightingTextureRW;
 RWTexture2D<float4>                     _SsrHitPointTexture;
 Texture2D<float4>                       _SsrClearCoatMaskTexture;
 
+RWTexture2D<uint>                  _RTReflBinCounts;
+RWTexture2D<uint>                  _RTReflBinOffsets;
+RWTexture2D<uint>                  _RTReflBinTemp;
+
+
 [shader("miss")]
 void MissShaderReflections(inout RayIntersection rayIntersection : SV_RayPayload)
 {
@@ -183,6 +188,11 @@ void RayGenIntegration()
     // Compute the pixel coordinate to evaluate
     uint2 currentCoord = uint2(LaunchIndex.x, LaunchDim.y - LaunchIndex.y - 1);
 
+    if (currentCoord.x < 2048)
+    {
+        _RTReflBinOffsets[uint2(currentCoord.x,0)].x = _RTReflBinCounts[uint2(currentCoord.x,0)].x;
+    }
+
     // Get the scramblingValue of this pixel
     uint2 scramblingValue = ScramblingValue(currentCoord.x, currentCoord.y);
 
@@ -252,6 +262,10 @@ void RayGenIntegration()
         float3 sampleDir = float3(0.0, 0.0, 0.0);
         float NdotL, NdotH, VdotH, LdotH;
         SampleGGXDir2(sample, viewWS, localToWorld, roughness, sampleDir, NdotL, NdotH, VdotH, LdotH, false);
+
+        // If the sample is under the surface
+        //if (dot(sampleDir, normalData.normalWS) <= 0.0)
+        //    continue;
 
         // Create the ray descriptor for this pixel
         RayDesc rayDescriptor;
