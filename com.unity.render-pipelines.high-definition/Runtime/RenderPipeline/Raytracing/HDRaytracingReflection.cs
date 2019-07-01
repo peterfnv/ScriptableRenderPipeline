@@ -28,10 +28,12 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
         RTHandleSystem.RTHandle m_rtReflBinTemp = null;
         RTHandleSystem.RTHandle m_rtReflBinRemap = null;
 
-        int binningMaxBins = 2048;                  //4bits tile, 4bits,3bits angle
+        int binningMaxBins = 32768;                  
 #if true
-        RenderTexture m_rtReflBinCounts { get; set; }     //counts of each mat after trace (size=maxmats)
-        RenderTexture m_rtReflBinOffsets { get; set; }    //offsets of each bin in binningBins (size=maxmats)
+        RenderTexture m_rtReflBinCounts { get; set; }       //counts of each mat after trace (size=binningMaxBins)
+        RenderTexture m_rtReflBinOffsets { get; set; }      //offsets of each bin in binningBins (size=binningMaxBins)
+        RenderTexture m_rtReflBinBlocksumCounts { get; set; }    //blocksums (size = binningMaxBins/256)
+        RenderTexture m_rtReflBinBlocksumOffsets { get; set; }    //blocksums (size = binningMaxBins/256)
 #else
         ComputeBuffer m_rtReflBinCounts = null;
         ComputeBuffer m_rtReflBinOffsets = null;
@@ -74,7 +76,9 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
 #if true
             if (m_rtReflBinCounts == null)
             {
-                m_rtReflBinCounts = new RenderTexture(binningMaxBins, 1, 0, GraphicsFormat.R32_UInt);
+                int xs = 1024;
+                int ys = binningMaxBins / 1024;
+                m_rtReflBinCounts = new RenderTexture(xs, ys+1, 0, GraphicsFormat.R32_UInt);
                 m_rtReflBinCounts.enableRandomWrite = true;
                 m_rtReflBinCounts.hideFlags = HideFlags.HideAndDontSave;
                 m_rtReflBinCounts.filterMode = FilterMode.Point;
@@ -85,7 +89,9 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             }
             if (m_rtReflBinOffsets == null)
             {
-                m_rtReflBinOffsets = new RenderTexture(binningMaxBins, 1, 0, GraphicsFormat.R32_UInt);
+                int xs = 1024;
+                int ys = binningMaxBins / 1024;
+                m_rtReflBinOffsets = new RenderTexture(xs, ys+1, 0, GraphicsFormat.R32_UInt);
                 m_rtReflBinOffsets.enableRandomWrite = true;
                 m_rtReflBinOffsets.hideFlags = HideFlags.HideAndDontSave;
                 m_rtReflBinOffsets.filterMode = FilterMode.Point;
@@ -94,6 +100,35 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                 m_rtReflBinOffsets.name = "m_rtReflBinOffsets";
                 m_rtReflBinOffsets.Create();
             }
+            if (m_rtReflBinBlocksumCounts == null)
+            {
+                int c = binningMaxBins / 256 >= 256 ? binningMaxBins / 256 : 256;   //figure out their max later
+                int xs = 1024;
+                int ys = c / 1024;
+                m_rtReflBinBlocksumCounts = new RenderTexture(xs, ys+1, 0, GraphicsFormat.R32_UInt);
+                m_rtReflBinBlocksumCounts.enableRandomWrite = true;
+                m_rtReflBinBlocksumCounts.hideFlags = HideFlags.HideAndDontSave;
+                m_rtReflBinBlocksumCounts.filterMode = FilterMode.Point;
+                m_rtReflBinBlocksumCounts.wrapMode = TextureWrapMode.Clamp;
+                m_rtReflBinBlocksumCounts.anisoLevel = 0;
+                m_rtReflBinBlocksumCounts.name = "m_rtReflBinBlocksumCounts";
+                m_rtReflBinBlocksumCounts.Create();
+            }
+            if (m_rtReflBinBlocksumOffsets == null)
+            {
+                int c = binningMaxBins / 256 >= 256 ? binningMaxBins / 256 : 256;   //figure out their max later
+                int xs = 1024;
+                int ys = c / 1024;
+                m_rtReflBinBlocksumOffsets = new RenderTexture(xs, ys + 1, 0, GraphicsFormat.R32_UInt);
+                m_rtReflBinBlocksumOffsets.enableRandomWrite = true;
+                m_rtReflBinBlocksumOffsets.hideFlags = HideFlags.HideAndDontSave;
+                m_rtReflBinBlocksumOffsets.filterMode = FilterMode.Point;
+                m_rtReflBinBlocksumOffsets.wrapMode = TextureWrapMode.Clamp;
+                m_rtReflBinBlocksumOffsets.anisoLevel = 0;
+                m_rtReflBinBlocksumOffsets.name = "m_rtReflBinBlocksumOffsets";
+                m_rtReflBinBlocksumOffsets.Create();
+            }
+
 #else
             if (m_rtReflBinCounts == null)
             {
@@ -138,6 +173,16 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                 DestroyObjectCustom(m_rtReflBinOffsets);
                 m_rtReflBinOffsets = null;
             }
+            if (m_rtReflBinBlocksumCounts != null)
+            {
+                DestroyObjectCustom(m_rtReflBinBlocksumCounts);
+                m_rtReflBinBlocksumCounts = null;
+            }
+            if (m_rtReflBinBlocksumOffsets != null)
+            {
+                DestroyObjectCustom(m_rtReflBinBlocksumOffsets);
+                m_rtReflBinBlocksumOffsets = null;
+            }
 #else
             CoreUtils.SafeRelease(m_rtReflBinCounts);
             CoreUtils.SafeRelease(m_rtReflBinOffsets);
@@ -161,9 +206,10 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             ComputeShader reflectionFilter = m_PipelineAsset.renderPipelineResources.shaders.reflectionBilateralFilterCS;
             RaytracingShader reflectionShader = m_PipelineAsset.renderPipelineResources.shaders.reflectionRaytracing;
             ComputeShader binningShaders = m_PipelineAsset.renderPipelineResources.shaders.reflectionBinningCS;
+            ComputeShader scanShaders = m_PipelineAsset.renderPipelineResources.shaders.scanCS;
 
             bool invalidState = rtEnvironement == null || blueNoise == null
-                || reflectionFilter == null || reflectionShader == null || binningShaders == null
+                || reflectionFilter == null || reflectionShader == null || binningShaders == null || scanShaders == null
                 || m_PipelineResources.textures.owenScrambledTex == null || m_PipelineResources.textures.scramblingTex == null;
 
             // If no acceleration structure available, end it now
@@ -213,43 +259,38 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                 using (new ProfilingSample(cmd, "clear bins"))
                 {
                     //clear binning counts
-                    int ki = binningShaders.FindKernel("ClearBinCounts");
+                    int ki = scanShaders.FindKernel("ScanInit");
                     if (ki < 0)
                         return;
 
                     // Inputs
-                    int tx = 2048;
+                    int tx = binningMaxBins;
                     int ty = 1;
-                    cmd.SetComputeTextureParam(binningShaders, ki, "_RTReflBinCounts", m_rtReflBinCounts);
-                    cmd.SetComputeIntParam(binningShaders, "_RTReflBinMax", 2048);
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanCounts", m_rtReflBinCounts);
+                    cmd.SetComputeIntParam(scanShaders, "_ScanMax", binningMaxBins);
 
                     uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
-                    binningShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+                    scanShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
 
                     int tgx = (int)((tx + bgroupSizeX - 1) / bgroupSizeX);
                     int tgy = (int)((ty + bgroupSizeY - 1) / bgroupSizeY);
 
                     // Dispatch
-                    cmd.DispatchCompute(binningShaders, ki, tgx, tgy, 1);
-
+                    cmd.DispatchCompute(scanShaders, ki, tgx, tgy, 1);
                 }
 
                 using (new ProfilingSample(cmd, "prepass"))
                 {
                     // Fetch the right filter to use
                     int currentKernel = binningShaders.FindKernel("Prepass");
-#if true
+
                     cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._DepthTexture, m_SharedRTManager.GetDepthStencilBuffer());
                     cmd.SetComputeTextureParam(binningShaders, currentKernel, "_NoiseTexture", blueNoise.textureArray16RGB);
-                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_VarianceTexture", m_VarianceBuffer);
-                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_MinColorRangeTexture", m_MinBoundBuffer);
-                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_MaxColorRangeTexture", m_MaxBoundBuffer);
-                    //cmd.SetComputeTextureParam(reflectionFilter, currentKernel, "_RaytracingReflectionTexture", outputTexture);
                     cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._ScramblingTexture, m_PipelineResources.textures.scramblingTex);
                     cmd.SetComputeIntParam(binningShaders, HDShaderIDs._SpatialFilterRadius, rtEnvironement.reflSpatialFilterRadius);
                     cmd.SetComputeFloatParam(binningShaders, HDShaderIDs._RaytracingReflectionMinSmoothness, rtEnvironement.reflMinSmoothness);
 
-                    cmd.SetComputeIntParam(binningShaders, "_RTReflBinMax", 2048);
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflBinMax", binningMaxBins);
                     cmd.SetComputeIntParam(binningShaders, "_RTReflWidth", (int)widthResolution);
                     cmd.SetComputeIntParam(binningShaders, "_RTReflHeight", (int)heightResolution);
 
@@ -261,7 +302,6 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
                     RenderTargetIdentifier clearCoatMaskTexture2 = hdCamera.frameSettings.litShaderMode == LitShaderMode.Deferred ? m_GbufferManager.GetBuffersRTI()[2] : Texture2D.blackTexture;
                     cmd.SetComputeTextureParam(binningShaders, currentKernel, HDShaderIDs._SsrClearCoatMaskTexture, clearCoatMaskTexture2);
 
-
                     uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
                     binningShaders.GetKernelThreadGroupSizes(currentKernel, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
 
@@ -270,7 +310,87 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
 
                     // Compute the texture
                     cmd.DispatchCompute(binningShaders, currentKernel, tgx, tgy, 1);
-#endif
+                }
+
+                using (new ProfilingSample(cmd, "scan counts->offsets"))
+                {
+                    int ki = scanShaders.FindKernel("ScanMain");
+                    if (ki < 0)
+                        return;
+
+                    // Inputs
+                    int tx = binningMaxBins / 2;    //each thread processes two bins
+                    int ty = 1;
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanCounts", m_rtReflBinCounts);
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanOffsets", m_rtReflBinOffsets);
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanBlocksums", m_rtReflBinBlocksumCounts);
+                    cmd.SetComputeIntParam(scanShaders, "_ScanStoreBlocksums", 1);
+                    cmd.SetComputeIntParam(scanShaders, "_ScanMax", binningMaxBins); 
+
+                    uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
+                    scanShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    int tgx = (int)((tx + bgroupSizeX - 1) / bgroupSizeX);
+                    int tgy = (int)((ty + bgroupSizeY - 1) / bgroupSizeY);
+
+                    // Dispatch
+                    cmd.DispatchCompute(scanShaders, ki, tgx, tgy, 1);
+
+                    //--------------------------------------
+                    // Inputs
+                    tx = 128;// 2048/256/2;binningMaxBins
+                    ty = 1;
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanCounts", m_rtReflBinBlocksumCounts);   
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanOffsets", m_rtReflBinBlocksumOffsets);     
+                    cmd.SetComputeIntParam(scanShaders, "_ScanStoreBlocksums", 0);
+                    cmd.SetComputeIntParam(scanShaders, "_ScanMax", binningMaxBins / 256);
+
+                    scanShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    tgx = (int)((tx + bgroupSizeX - 1) / bgroupSizeX);
+                    tgy = (int)((ty + bgroupSizeY - 1) / bgroupSizeY);
+
+                    cmd.DispatchCompute(scanShaders, ki, tgx, tgy, 1);
+
+                    //------------------------------------
+                    ki = scanShaders.FindKernel("ScanAddBlocksums");
+                    if (ki < 0)
+                        return;
+
+                    tx = binningMaxBins;
+                    ty = 1;
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanBlocksums", m_rtReflBinBlocksumOffsets);
+                    cmd.SetComputeTextureParam(scanShaders, ki, "_ScanOffsets", m_rtReflBinOffsets);
+                    cmd.SetComputeIntParam(scanShaders, "_ScanMax", binningMaxBins);
+
+                    scanShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    tgx = (int)((tx + bgroupSizeX - 1) / bgroupSizeX);
+                    tgy = (int)((ty + bgroupSizeY - 1) / bgroupSizeY);
+
+                    cmd.DispatchCompute(scanShaders, ki, tgx, tgy, 1);
+                }
+
+                using (new ProfilingSample(cmd, "calcbins"))
+                {
+                    // Fetch the right filter to use
+                    int ki = binningShaders.FindKernel("CalculateBins");
+
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflWidth", (int)widthResolution);
+                    cmd.SetComputeIntParam(binningShaders, "_RTReflHeight", (int)heightResolution);
+
+                    cmd.SetComputeTextureParam(binningShaders, ki, "_RTReflBinTemp", m_rtReflBinTemp);
+                    cmd.SetComputeTextureParam(binningShaders, ki, "_RTReflBinRemap", m_rtReflBinRemap);
+                    cmd.SetComputeTextureParam(binningShaders, ki, "_RTReflBinOffsets", m_rtReflBinOffsets);
+
+                    uint bgroupSizeX, bgroupSizeY, bgroupSizeZ;
+                    binningShaders.GetKernelThreadGroupSizes(ki, out bgroupSizeX, out bgroupSizeY, out bgroupSizeZ);
+
+                    int tgx = (int)((widthResolution + bgroupSizeX - 1) / bgroupSizeX);
+                    int tgy = (int)((heightResolution + bgroupSizeY - 1) / bgroupSizeY);
+
+                    // Compute the texture
+                    cmd.DispatchCompute(binningShaders, ki, tgx, tgy, 1);
                 }
             }
 
@@ -303,9 +423,10 @@ namespace UnityEngine.Experimental.Rendering.HDPipeline
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, HDShaderIDs._NormalBufferTexture, m_SharedRTManager.GetNormalBuffer());
 
             //test!!!!
-            cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinTemp", m_rtReflBinTemp);
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinCounts", m_rtReflBinCounts);
             cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinOffsets", m_rtReflBinOffsets);
+            //!!!
+            cmd.SetRaytracingTextureParam(reflectionShader, targetRayGen, "_RTReflBinRemap", m_rtReflBinRemap);
 
             // Set ray count tex
             cmd.SetRaytracingIntParam(reflectionShader, HDShaderIDs._RayCountEnabled, m_RaytracingManager.rayCountManager.RayCountIsEnabled());

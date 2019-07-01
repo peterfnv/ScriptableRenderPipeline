@@ -1,7 +1,5 @@
-#pragma kernel ClearBinCounts
 #pragma kernel Prepass
-//#pragma kernel CountsToOffsets
-//#pragma kernel CalculateBins
+#pragma kernel CalculateBins
 
 #pragma enable_d3d11_debug_symbols
 
@@ -27,6 +25,8 @@
 RWTexture2D<uint>                  _RTReflBinCounts;
 RWTexture2D<uint>                  _RTReflBinOffsets;
 RWTexture2D<uint>                  _RTReflBinTemp;
+RWTexture2D<uint>                  _RTReflBinRemap;
+
 Texture2D<float>                   _DepthTexture;
 Texture2D<float4>                  _SsrClearCoatMaskTexture;
 
@@ -34,189 +34,126 @@ uint _RTReflBinMax;
 uint _RTReflWidth;
 uint _RTReflHeight;  
 
-[numthreads(64, 1, 1)]
-void ClearBinCounts(uint3 dispatchThreadId : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID)
+uint2 IndexToCoord(uint idx)
 {
-    if (dispatchThreadId.x < _RTReflBinMax && dispatchThreadId.y<1)
+    return uint2(idx % 1024, idx / 1024);
+}
+
+uint BinFromThing(uint3 id)
+{
+    uint bin = _RTReflBinMax - 1;
+
+    uint2 LaunchDim = uint2(_RTReflWidth, _RTReflHeight);
+    // Compute the pixel coordinate to evaluate
+    uint2 currentCoord = uint2(id.x, _RTReflHeight - id.y - 1);
+
+    // Get the scramblingValue of this pixel
+    uint2 scramblingValue = ScramblingValue(currentCoord.x, currentCoord.y);
+
+    // Read the depth value
+    float depthValue = _DepthTexture[currentCoord];
+
+    // This point is part of the background, we don't really care
+    if (depthValue == UNITY_RAW_FAR_CLIP_VALUE)
     {
-        _RTReflBinCounts[dispatchThreadId.xy] = 0; 
+        return _RTReflBinMax - 1;
     }
+
+    PositionInputs posInput = GetPositionInput(currentCoord, 1.0f / LaunchDim.xy, depthValue, _InvViewProjMatrix, _ViewMatrix, 0);
+
+    float3 positionWS = GetAbsolutePositionWS(posInput.positionWS);
+
+    // Compute the incident vector on the surfaces
+    float3 viewWS = normalize(_WorldSpaceCameraPos - positionWS);
+
+    // Decode the world space normal
+    NormalData normalData;
+    DecodeFromNormalBuffer(currentCoord, normalData);
+    // Override the roughness by the clearcoat value of this is a clear coat
+    float4 coatMask = _SsrClearCoatMaskTexture[currentCoord];
+    normalData.perceptualRoughness = HasClearCoatMask(coatMask) ? CLEAR_COAT_PERCEPTUAL_ROUGHNESS : normalData.perceptualRoughness;
+
+    // Create the local ortho basis
+    float3x3 localToWorld = GetLocalFrame(normalData.normalWS);
+
+    // If this value is beyond the smothness that we allow, no need to compute it
+    if (_RaytracingReflectionMinSmoothness > PerceptualRoughnessToPerceptualSmoothness(normalData.perceptualRoughness))
+    {
+        return _RTReflBinMax - 1;
+    }
+
+    // Compute the actual roughness
+    float roughness = PerceptualRoughnessToRoughness(normalData.perceptualRoughness);
+
+    // Clamp the sample count if the surface is a completely smooth
+    int realSampleCount = normalData.perceptualRoughness < 0.01 ? 1 : _RaytracingNumSamples;
+
+    // Compute the current sample index
+    int globalSampleIndex = _RaytracingFrameIndex * realSampleCount;
+
+    // Generate the new sample (follwing values of the sequence)
+    float2 sample = float2(0.0, 0.0);
+    sample.x = GetRaytracingNoiseSample(globalSampleIndex, 0, scramblingValue.x);
+    sample.y = GetRaytracingNoiseSample(globalSampleIndex, 1, scramblingValue.y);
+
+    // Importance sample the direction using GGX
+    float3 sampleDir = float3(0.0, 0.0, 0.0);
+    float NdotL, NdotH, VdotH, LdotH;
+    SampleGGXDir2(sample, viewWS, localToWorld, roughness, sampleDir, NdotL, NdotH, VdotH, LdotH, false);
+
+    float zen = acos(sampleDir.z);
+    float az = atan2(sampleDir.y, sampleDir.x);
+
+    float pi = 3.141592654;
+    zen = zen / pi * 32.0;
+    az = (az + pi) / (2.0 * pi) * 64.0;
+
+    uint2 tile = id.xy / (LaunchDim.xy / uint2(4, 4));
+    tile = clamp(tile, 0, 3);
+
+    //bin = (tile.x) | (tile.y << 2) | (uint(zen) << 4) | (uint(az) << 9);
+
+    bin = (uint(az)) | (uint(zen) << 6) | (tile.y << 11) | (tile.x << 13);
+
+    return bin;
 }
 
 [numthreads(8, 8, 1)]
-void Prepass(uint3 dispatchThreadId : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID)
+void Prepass(uint3 id : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID)
 {
-#if 1
-
-    if (dispatchThreadId.x < _RTReflWidth && dispatchThreadId.y < _RTReflHeight)
+    if (id.x < _RTReflWidth && id.y < _RTReflHeight)
     {
-        uint2 LaunchDim = uint2(_RTReflWidth, _RTReflHeight);
-        // Compute the pixel coordinate to evaluate
-        uint2 currentCoord = uint2(dispatchThreadId.x, _RTReflHeight - dispatchThreadId.y - 1);
+        uint bin = BinFromThing(id);
 
-        // Get the scramblingValue of this pixel
-        uint2 scramblingValue = ScramblingValue(currentCoord.x, currentCoord.y);
-
-        // Read the depth value
-        float depthValue = _DepthTexture[currentCoord]; 
-
-        // This point is part of the background, we don't really care
-        if (depthValue == UNITY_RAW_FAR_CLIP_VALUE)
-        {
-            _RTReflBinTemp[dispatchThreadId.xy].x = 0xffffffff;
-            return;
-        }
-        PositionInputs posInput = GetPositionInput(currentCoord, 1.0f / LaunchDim.xy, depthValue, _InvViewProjMatrix, _ViewMatrix, 0);
-
-        float3 positionWS = GetAbsolutePositionWS(posInput.positionWS);
-
-        // Compute the incident vector on the surfaces
-        float3 viewWS = normalize(_WorldSpaceCameraPos - positionWS);
-
-        // Decode the world space normal
-        NormalData normalData;
-        DecodeFromNormalBuffer(currentCoord, normalData);
-        // Override the roughness by the clearcoat value of this is a clear coat
-        float4 coatMask = _SsrClearCoatMaskTexture[currentCoord];
-        normalData.perceptualRoughness = HasClearCoatMask(coatMask) ? CLEAR_COAT_PERCEPTUAL_ROUGHNESS : normalData.perceptualRoughness;
-
-        // Create the local ortho basis
-        float3x3 localToWorld = GetLocalFrame(normalData.normalWS);
-
-        // If this value is beyond the smothness that we allow, no need to compute it
-        if (_RaytracingReflectionMinSmoothness > PerceptualRoughnessToPerceptualSmoothness(normalData.perceptualRoughness))
-        {
-            _RTReflBinTemp[dispatchThreadId.xy].x = 0xffffffff;
-            return;
-        }
-
-        // Compute the actual roughness
-        float roughness = PerceptualRoughnessToRoughness(normalData.perceptualRoughness);
-
-        // Clamp the sample count if the surface is a completely smooth
-        int realSampleCount = normalData.perceptualRoughness < 0.01 ? 1 : _RaytracingNumSamples;
-
-        // Compute the current sample index
-        int globalSampleIndex = _RaytracingFrameIndex * realSampleCount;
-
-        // Generate the new sample (follwing values of the sequence)
-        float2 sample = float2(0.0, 0.0);
-        sample.x = GetRaytracingNoiseSample(globalSampleIndex, 0, scramblingValue.x);
-        sample.y = GetRaytracingNoiseSample(globalSampleIndex, 1, scramblingValue.y);
-
-        // Importance sample the direction using GGX
-        float3 sampleDir = float3(0.0, 0.0, 0.0);
-        float NdotL, NdotH, VdotH, LdotH;
-        SampleGGXDir2(sample, viewWS, localToWorld, roughness, sampleDir, NdotL, NdotH, VdotH, LdotH, false);
-
-        float zen = acos(sampleDir.z);
-        float az = atan2(sampleDir.y, sampleDir.x);
-
-        float pi = 3.141592654;
-        zen = zen / pi * 8;
-        az = (az + pi) / (2.0 * pi) * 16.0;
-
-        uint2 tile = dispatchThreadId.xy / (LaunchDim.xy / uint2(4, 4));
-        tile = clamp(tile, 0, 3);
-
-        int bin = (tile.x) | (tile.y << 2) | (uint(zen) << 4) | (uint(az) << 7);
-
-        uint2 idx = uint2(bin, 0);
         uint curoffset;
-        InterlockedAdd(_RTReflBinCounts[idx], 1, curoffset);		//atomic add to bin counts and return current offset into bin
+        InterlockedAdd(_RTReflBinCounts[IndexToCoord(bin)], 1, curoffset);		//atomic add to bin counts and return current offset into bin
 
-        uint packedint = (curoffset << 11) | bin;       			//assumes a lot
-        _RTReflBinTemp[dispatchThreadId.xy].x = packedint;
-
+        uint packedint = (curoffset << 15) | bin;       			//assumes a lot
+        _RTReflBinTemp[id.xy].x = packedint;
     }
-#endif
-}
-
-//Sort each group bins (2048 / 256 so 8 bins) NO, cos 1 thread does two entries
-//Sort _RTReflBinCounts into _RTReflBinOffsets
-
-//TODO. Find out how to make these 1d buffers that also work in Raytracing/Raygen shaders
-RWTexture2D<uint>   _ScanCounts;
-RWTexture2D<uint>   _ScanOffsets;
-RWTexture2D<uint>   _ScanBlocksums;
-int                 _ScanStoreBlocksums;
-int                 _ScanMax;
-//int                 _ScanThreadGroupSize;   //128, processing 256 items per thread group
-
-groupshared int scanSharedMem[256];	
-[numthreads(128, 1, 1)]
-void Scan(uint3 id : SV_DispatchThreadID)
-{
-    //TODO, avoid bank conflicts?
-    int thid = id.x&127;    //id actually 0-127
-    int rwid = (id.x * 2);
-
-    int offset = 1;
-
-    scanSharedMem[2 * thid] = _ScanCounts[uint2(rwid, 0)].x;
-    scanSharedMem[2 * thid + 1] = _ScanCounts[uint2(rwid + 1, 0)].x;
-
-    int finalCount = 0;
-    if (thid == 127)
-    {
-        finalCount = scanSharedMem[255];
-    }
-
-    int d;
-    for (d = (int)256 >> 1; d > 0; d >>= 1)
-    {
-        GroupMemoryBarrierWithGroupSync();
-        if (thid < d)
-        {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
-            scanSharedMem[bi] += scanSharedMem[ai];
-        }
-        offset *= 2;
-    }
-
-    if (thid == 0)
-        scanSharedMem[255] = 0;
-
-    for (d = 1; d < (int)256; d *= 2)
-    {
-        offset >>= 1;
-        GroupMemoryBarrierWithGroupSync();
-        if (thid < d)
-        {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
-            int t = scanSharedMem[ai];
-            scanSharedMem[ai] = scanSharedMem[bi];
-            scanSharedMem[bi] += t;
-        }
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    _ScanOffsets[uint2(rwid, 0)].x = scanSharedMem[2 * thid];
-    _ScanOffsets[uint2(rwid + 1, 0)].x = scanSharedMem[2 * thid + 1];
-
-    if (thid == 127)
-    {
-        if (_ScanStoreBlocksums)
-        {
-            _ScanBlocksums[id.x / 128].x = finalCount + scanSharedMem[255];
-        }
-    }
-}
-
-//find parallel prefix sum for initial valus in _RTReflBinOffsets[0],[256],[512],[768],[1024] etc
-//store into _RTReflBinCounts[0-7]
-[numthreads(128, 1, 1)]
-void AddBlockSumsToOffsets(uint3 id : SV_DispatchThreadID)
-{
 
 }
 
 
 [numthreads(8, 8, 1)]
-void CalculateBins(uint3 dispatchThreadId : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID)
+void CalculateBins(uint3 id : SV_DispatchThreadID, uint2 groupThreadId : SV_GroupThreadID, uint2 groupId : SV_GroupID)
 {
+    if (all(id.xy < uint2(_RTReflWidth, _RTReflHeight)))
+    {
+        uint packedint = _RTReflBinTemp[id.xy].x;
+
+        uint binOffset = packedint >> 15;
+        uint binIndex = packedint & 0x7fff;
+
+        uint offsetIntoBins = _RTReflBinOffsets[IndexToCoord(binIndex)].x + binOffset;
+
+        uint launchID = (id.y <<16 ) | id.x;	    //combine 2d ray launch into 1d value
+
+        uint binOffsetX = offsetIntoBins % _RTReflWidth;	//convert bin offset into 2d offset 
+        uint binOffsetY = offsetIntoBins / _RTReflWidth;
+
+        _RTReflBinRemap[uint2(binOffsetX, binOffsetY)].x = launchID;
+    }
 }
 
 

@@ -35,9 +35,10 @@ RWTexture2D<float4>                     _SsrLightingTextureRW;
 RWTexture2D<float4>                     _SsrHitPointTexture;
 Texture2D<float4>                       _SsrClearCoatMaskTexture;
 
-RWTexture2D<uint>                  _RTReflBinCounts;
-RWTexture2D<uint>                  _RTReflBinOffsets;
-RWTexture2D<uint>                  _RTReflBinTemp;
+RWTexture2D<uint>                  _RTReflBinRemap;
+
+RWTexture2D<uint>   _RTReflBinCounts;
+RWTexture2D<uint>   _RTReflBinOffsets;
 
 
 [shader("miss")]
@@ -182,16 +183,21 @@ void RayGenHalfRes()
 void RayGenIntegration()
 {
     // Grab the dimensions of the current dispatch
-    uint3 LaunchIndex = DispatchRaysIndex();
+
+    //just to get the buffer visible in Nsight
+    _RTReflBinOffsets[uint2(0,0)].x = _RTReflBinCounts[uint2(0,0)].x;
+
+    uint3 dispRaysIndex = DispatchRaysIndex();
+    uint packed = _RTReflBinRemap[dispRaysIndex.xy].x;
+
+    uint3 LaunchIndex = uint3( packed&0xffff, packed >> 16, 0);
+
+    //uint3 LaunchIndex = DispatchRaysIndex();
+
     uint3 LaunchDim = DispatchRaysDimensions();
 
     // Compute the pixel coordinate to evaluate
     uint2 currentCoord = uint2(LaunchIndex.x, LaunchDim.y - LaunchIndex.y - 1);
-
-    if (currentCoord.x < 2048)
-    {
-        _RTReflBinOffsets[uint2(currentCoord.x,0)].x = _RTReflBinCounts[uint2(currentCoord.x,0)].x;
-    }
 
     // Get the scramblingValue of this pixel
     uint2 scramblingValue = ScramblingValue(currentCoord.x, currentCoord.y);
